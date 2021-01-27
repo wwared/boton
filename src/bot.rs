@@ -7,6 +7,8 @@ use serde::Deserialize;
 use log::*;
 
 use crate::irc;
+use crate::plugins;
+use plugins::Plugin;
 
 /// Global configuration, including possibly many bots
 #[derive(Debug, Deserialize)]
@@ -38,7 +40,6 @@ struct Bot {
 
 impl Bot {
     // TODO handle reconnection
-
     // TODO try to go back to old nick if changed
     // TODO handle kicks/parts/whatever and rejoin?
 
@@ -51,6 +52,9 @@ impl Bot {
                 irc::connect(&self.server).await?
             };
 
+            let echo = plugins::echo::EchoPlugin::new();
+            let _echo_handle = echo.spawn_task(irc.clone())?;
+
             irc.authenticate(self.nick, self.ident, self.real_name).await?;
 
             loop {
@@ -59,7 +63,7 @@ impl Bot {
                         irc::Command::Ping => irc.reply_pong(msg).await?,
                         irc::Command::ErrNicknameInUse => irc.reply_nick_in_use(msg).await?,
                         irc::Command::RplWelcome => irc.join(&self.channels).await?,
-                        _ => debug!("[{}] Ignoring {:?}", self.server.0, msg),
+                        _ => trace!("[{}] Ignoring {:?}", self.server.0, msg),
                     }
                 }
             }
