@@ -15,7 +15,7 @@ fn process_buf(src: &mut BytesMut) -> Vec<Message> {
     for (pos, win) in src.windows(2).enumerate() {
         if win == b"\r\n" {
             let decoded = String::from_utf8_lossy(&src[start..pos]);
-            info!("<- '{}'", decoded);
+            debug!("<- \"{}\"", decoded);
 
             // FIXME: can't ? here
             let msg = parse_line(&decoded);
@@ -186,7 +186,7 @@ impl<S: 'static + AsyncReadExt + AsyncWriteExt + Unpin + Send> Connection<S> {
     }
 
     async fn send_message(stream: &mut BufWriter<WriteHalf<S>>, msg: &Message) -> Result<()> {
-        debug!("Sending message: {:?}", msg);
+        trace!("Sending message: {:?}", msg);
         let cmd = String::try_from(&msg.command)?;
         stream.write_all(cmd.as_bytes()).await?;
 
@@ -209,13 +209,13 @@ impl<S: 'static + AsyncReadExt + AsyncWriteExt + Unpin + Send> Connection<S> {
         }
 
         stream.write_all(b"\r\n").await?;
-        info!("-> {:?}", String::from_utf8_lossy(stream.buffer()));
+        debug!("-> {:?}", String::from_utf8_lossy(stream.buffer()));
         stream.flush().await?;
         Ok(())
     }
 
     async fn spawn_tasks(self) -> Result<(IRC, JoinHandle<Result<()>>)> {
-        info!("Spawning connection tasks...");
+        trace!("Spawning connection tasks...");
         let irc = self.get_channels();
         let join_handle = tokio::spawn(async move {
             let (mut send_channel_rx, mut write_half) = (self.sent_messages.1, self.write_half);
@@ -226,23 +226,23 @@ impl<S: 'static + AsyncReadExt + AsyncWriteExt + Unpin + Send> Connection<S> {
             let read_handle = tokio::spawn(async move {
                 loop {
                     Connection::receive_messages(&mut recv_half, &mut recv_buffer, &recv_channel_tx).await.unwrap();
-                    info!("Processed a batch of received messages");
+                    trace!("Processed a batch of received messages");
                 }
             });
-            info!("Spawned read task: {:?}", read_handle);
+            trace!("Spawned read task: {:?}", read_handle);
 
             // Send messages
             let send_handle = tokio::spawn(async move {
                 while let Some(msg) = send_channel_rx.recv().await {
-                    info!("Got message to send");
+                    trace!("Got message to send");
                     Connection::send_message(&mut write_half, &msg).await.unwrap();
                 }
             });
-            info!("Spawned send task: {:?}", send_handle);
+            trace!("Spawned send task: {:?}", send_handle);
 
             read_handle.await?;
             send_handle.await?;
-            info!("Exiting connection tasks...");
+            warn!("Exiting connection tasks...");
             Ok(())
         });
         Ok((irc, join_handle))
@@ -285,6 +285,15 @@ impl Message {
         }
     }
 
+    fn double_argument<S: Into<String>>(cmd: Command, target: S, arg: S) -> Message {
+        Message {
+            source: None,
+            command: cmd,
+            target: Some(target.into()),
+            parameters: vec![arg.into()],
+        }
+    }
+
     fn nick<S: Into<String>>(new_nick: S) -> Message {
         Message::single_argument(Command::Nick, new_nick)
     }
@@ -292,9 +301,34 @@ impl Message {
     fn join<S: Into<String>>(channel: S) -> Message {
         Message::single_argument(Command::Join, channel)
     }
+
+    pub fn privmsg<S: Into<String>>(target: S, message: S) -> Message {
+        Message::double_argument(Command::Privmsg, target, message)
+    }
+
+    pub fn source_as_user(&self) -> Option<User> {
+        if let Some(src) = self.source.clone() {
+            if let Some(bang) = src.find('!') {
+                if let Some(at) = src.find('@') {
+                    Some(User {
+                        nick: src[..bang].to_string(),
+                        ident: src[bang+1..at].to_string(),
+                        host: src[at+1..].to_string(),
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
 impl IRC {
+    // TODO probably move these out of this file?
     pub async fn authenticate(&mut self, nick: String, ident: String, real_name: String) -> Result<()> {
         self.send_messages.send(Message {
             source: None,
@@ -351,6 +385,14 @@ struct Connection<S> {
 
     received_messages: broadcast::Sender<Message>,
     sent_messages: (mpsc::Sender<Message>, mpsc::Receiver<Message>),
+}
+
+/// Type identifying a single user.
+#[derive(Debug)]
+pub struct User {
+    pub nick: String,
+    pub ident: String,
+    pub host: String,
 }
 
 /// Type describing single IRC message.
