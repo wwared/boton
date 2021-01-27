@@ -309,11 +309,11 @@ impl Message {
     pub fn source_as_user(&self) -> Option<User> {
         if let Some(src) = self.source.clone() {
             if let Some(bang) = src.find('!') {
-                if let Some(at) = src.find('@') {
+                if let Some(at) = src[bang..].find('@') {
                     Some(User {
                         nick: src[..bang].to_string(),
-                        ident: src[bang+1..at].to_string(),
-                        host: src[at+1..].to_string(),
+                        ident: src[bang+1..bang+at].to_string(),
+                        host: src[bang+at+1..].to_string(),
                     })
                 } else {
                     None
