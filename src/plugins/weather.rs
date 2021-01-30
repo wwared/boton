@@ -228,7 +228,6 @@ impl WeatherData {
             Speed::KMH => { meters_per_sec * 3.6 },
             Speed::MPH => { meters_per_sec * 2.237 },
         }
-
     }
 
     fn convert_wind_dir(degrees: f64) -> Result<&'static str> {
