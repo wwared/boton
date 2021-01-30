@@ -118,23 +118,6 @@ fn split_first_word(text: &str) -> (&str, Option<&str>) {
     }
 }
 
-// taken from the old bot -- might be able to revamp
-// #[derive(Debug)]
-// struct WeatherData {
-//     lat: f64,
-//     lon: f64,
-//     country: String,
-//     curr_temp: f64,
-//     feels_like: f64,
-//     min_temp: f64,
-//     max_temp: f64,
-//     icon: String,
-//     description: String,
-//     humidity: String,
-//     wind_ang: Option<u32>,
-//     wind_speed: Option<f32>,
-// }
-
 // structs taken from https://github.com/ddboline/weather_util_rust
 #[derive(Deserialize, Debug, Clone)]
 struct Coord {
