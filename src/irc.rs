@@ -149,15 +149,15 @@ const SEND_MSG_CHAN: usize = 16;
 
 // TODO remove allow(dead_code)
 #[allow(dead_code)]
-pub async fn connect<A: ToSocketAddrs>(addr: A) -> Result<(IRC, JoinHandle<Result<()>>)> {
+pub async fn connect<A: ToSocketAddrs>(server: &str, addr: A) -> Result<(IRC, JoinHandle<Result<()>>)> {
     let stream = TcpStream::connect(addr).await?;
 
-    let conn = Connection::from_socket(stream);
+    let conn = Connection::from_socket(server.into(), stream);
     conn.spawn_tasks().await
 }
 
 #[allow(dead_code)]
-pub async fn connect_tls<A: ToSocketAddrs>(addr: A, domain: &str) -> Result<(IRC, JoinHandle<Result<()>>)> {
+pub async fn connect_tls<A: ToSocketAddrs>(server: &str, addr: A, domain: &str) -> Result<(IRC, JoinHandle<Result<()>>)> {
     let connector = tokio_native_tls::native_tls::TlsConnector::builder()
         .danger_accept_invalid_certs(true)
         .use_sni(false)
@@ -168,12 +168,12 @@ pub async fn connect_tls<A: ToSocketAddrs>(addr: A, domain: &str) -> Result<(IRC
 
     let stream = connector.connect(domain, stream).await?;
 
-    let conn = Connection::from_socket(stream);
+    let conn = Connection::from_socket(server.into(), stream);
     conn.spawn_tasks().await
 }
 
 impl<S: 'static + AsyncReadExt + AsyncWriteExt + Unpin + Send> Connection<S> {
-    fn from_socket(socket: S) -> Self {
+    fn from_socket(server: String, socket: S) -> Self {
         let (recv_half, write_half) = split(socket);
         let write_half = BufWriter::new(write_half);
         let recv_buffer: BytesMut = BytesMut::with_capacity(READ_BUF_SIZE);
@@ -181,7 +181,7 @@ impl<S: 'static + AsyncReadExt + AsyncWriteExt + Unpin + Send> Connection<S> {
         drop(rx);
         let sent_messages = mpsc::channel(SEND_MSG_CHAN);
         Self {
-            write_half, recv_half, recv_buffer, received_messages, sent_messages
+            server, write_half, recv_half, recv_buffer, received_messages, sent_messages
         }
     }
 
@@ -268,6 +268,7 @@ impl<S: 'static + AsyncReadExt + AsyncWriteExt + Unpin + Send> Connection<S> {
 
     fn get_channels(&self) -> IRC {
         IRC {
+            server: self.server.clone(),
             received_messages_sender: self.received_messages.clone(),
             received_messages: self.received_messages.subscribe(),
             send_messages: self.sent_messages.0.clone(),
@@ -362,6 +363,8 @@ impl IRC {
 
 /// Type exposed to users for receiving and sending messages.
 pub struct IRC {
+    pub server: String,
+
     received_messages_sender: broadcast::Sender<Message>,
     pub received_messages: broadcast::Receiver<Message>,
     pub send_messages: mpsc::Sender<Message>,
@@ -370,6 +373,7 @@ pub struct IRC {
 impl Clone for IRC {
     fn clone(&self) -> IRC {
         IRC {
+            server: self.server.clone(),
             received_messages_sender: self.received_messages_sender.clone(),
             received_messages: self.received_messages_sender.subscribe(),
             send_messages: self.send_messages.clone(),
@@ -379,6 +383,8 @@ impl Clone for IRC {
 
 /// Inner type used by tasks for reading and writing to the underlying socket S.
 struct Connection<S> {
+    server: String,
+
     write_half: BufWriter<WriteHalf<S>>,
     recv_half: ReadHalf<S>,
     recv_buffer: BytesMut,
