@@ -5,15 +5,19 @@ use tokio::task::JoinHandle;
 use ron::de::from_reader;
 use serde::Deserialize;
 use log::*;
+use std::collections::HashMap;
 
 use crate::irc;
 use crate::plugins;
-use plugins::Plugin;
+
+/// Arbitrary optional configuration for a given plugin
+pub type PluginConfig = HashMap<String, String>;
 
 /// Global configuration, including possibly many bots
 #[derive(Debug, Deserialize)]
 pub struct Config {
     bots: Vec<Bot>,
+    plugins: HashMap<String, PluginConfig>,
 }
 
 /// Configuration for one instance of the bot
@@ -43,17 +47,18 @@ impl Bot {
     // TODO try to go back to old nick if changed
     // TODO handle kicks/parts/whatever and rejoin?
 
-    async fn spawn_tasks(self) -> Result<JoinHandle<Result<()>>> {
-        info!("Starting bot for {}", self.server.0);
+    async fn spawn_tasks(self, plugin_configs: HashMap<String, PluginConfig>) -> Result<JoinHandle<Result<()>>> {
+        let server = self.server.0.clone();
+        info!("[{}] Starting bot", server);
         let handle = tokio::spawn(async move {
             let (mut irc, _irc_handle) = if self.use_tls {
-                irc::connect_tls(&self.server, self.server.0.as_str()).await?
+                irc::connect_tls(server.as_str(), &self.server, self.server.0.as_str()).await?
             } else {
-                irc::connect(&self.server).await?
+                irc::connect(server.as_str(), &self.server).await?
             };
 
-            let echo = plugins::echo::EchoPlugin::new();
-            let _echo_handle = echo.spawn_task(irc.clone())?;
+            info!("[{}] Loading plugins", server);
+            let _plugs = plugins::spawn_plugins(&irc, plugin_configs);
 
             irc.authenticate(self.nick, self.ident, self.real_name).await?;
 
@@ -63,7 +68,7 @@ impl Bot {
                         irc::Command::Ping => irc.reply_pong(msg).await?,
                         irc::Command::ErrNicknameInUse => irc.reply_nick_in_use(msg).await?,
                         irc::Command::RplWelcome => irc.join(&self.channels).await?,
-                        _ => trace!("[{}] Ignoring {:?}", self.server.0, msg),
+                        _ => trace!("[{}] Ignoring {:?}", server, msg),
                     }
                 }
             }
@@ -82,7 +87,7 @@ impl Config {
     pub async fn spawn_tasks(self) -> Result<Vec<JoinHandle<Result<()>>>> {
         let mut handles = vec![];
         for bot in self.bots {
-            handles.push(bot.spawn_tasks().await?);
+            handles.push(bot.spawn_tasks(self.plugins.clone()).await?);
         }
         Ok(handles)
     }
