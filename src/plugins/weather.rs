@@ -137,9 +137,9 @@ fn split_first_word(text: &str) -> (&str, Option<&str>) {
 
 // structs taken from https://github.com/ddboline/weather_util_rust
 #[derive(Deserialize, Debug, Clone)]
-pub struct Coord {
-    pub lon: f64,
-    pub lat: f64,
+struct Coord {
+    lon: f64,
+    lat: f64,
 }
 
 impl Display for Coord {
@@ -149,64 +149,64 @@ impl Display for Coord {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct WeatherCond {
-    pub main: String,
-    pub description: String,
-    pub icon: Option<String>,
+struct WeatherCond {
+    main: String,
+    description: String,
+    icon: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct WeatherMain {
-    pub temp: f64,
-    pub feels_like: f64,
-    pub temp_min: f64,
-    pub temp_max: f64,
-    pub pressure: f64,
-    pub humidity: f64,
+struct WeatherMain {
+    temp: f64,
+    feels_like: f64,
+    temp_min: f64,
+    temp_max: f64,
+    pressure: f64,
+    humidity: f64,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct Wind {
-    pub speed: f64,
-    pub deg: Option<f64>,
+struct Wind {
+    speed: f64,
+    deg: Option<f64>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct Sys {
-    pub country: Option<String>,
+struct Sys {
+    country: Option<String>,
     // #[serde(with = "timestamp")]
-    // pub sunrise: DateTime<Utc>,
+    // sunrise: DateTime<Utc>,
     // #[serde(with = "timestamp")]
-    // pub sunset: DateTime<Utc>,
+    // sunset: DateTime<Utc>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct Rain {
+struct Rain {
     #[serde(alias = "3h")]
-    pub three_hour: Option<f64>,
+    three_hour: Option<f64>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct Snow {
+struct Snow {
     #[serde(alias = "3h")]
-    pub three_hour: Option<f64>,
+    three_hour: Option<f64>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct WeatherData {
-    pub coord: Coord,
-    pub weather: Vec<WeatherCond>,
-    pub base: String,
-    pub main: WeatherMain,
-    pub visibility: Option<f64>,
-    pub wind: Wind,
-    pub rain: Option<Rain>,
-    pub snow: Option<Snow>,
+struct WeatherData {
+    coord: Coord,
+    weather: Vec<WeatherCond>,
+    base: String,
+    main: WeatherMain,
+    visibility: Option<f64>,
+    wind: Wind,
+    rain: Option<Rain>,
+    snow: Option<Snow>,
     // #[serde(with = "timestamp")]
-    // pub dt: DateTime<Utc>,
-    pub sys: Sys,
-    pub timezone: i32,
-    pub name: String,
+    // dt: DateTime<Utc>,
+    sys: Sys,
+    timezone: i32,
+    name: String,
 }
 
 impl Display for Speed {
