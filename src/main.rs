@@ -6,8 +6,6 @@ mod plugins;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    // TODO make some api for "plugins"
-
     let bots = bot::Config::load_from("config")?;
     println!("Loaded config: {:#?}", bots);
     let bot_handles = bots.spawn_tasks().await?;

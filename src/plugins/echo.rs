@@ -2,15 +2,21 @@ use anyhow::Result;
 use tokio::task::JoinHandle;
 use log::*;
 use crate::irc;
-use crate::plugins::Plugin;
+use crate::bot;
+use crate::plugins::{Plugin, PluginBuilder};
 
 pub struct EchoPlugin;
 
-impl Plugin for EchoPlugin {
-    fn new() -> Self {
-        EchoPlugin
-    }
+impl PluginBuilder for EchoPlugin {
+    const NAME: &'static str = "echo";
+    type Plugin = EchoPlugin;
 
+    fn new(_server: &str, _config: Option<&bot::PluginConfig>) -> Result<EchoPlugin> {
+        Ok(EchoPlugin)
+    }
+}
+
+impl Plugin for EchoPlugin {
     fn spawn_task(self, mut irc: irc::IRC) -> Result<JoinHandle<Result<()>>> {
         info!("Registering echo");
         let handle = tokio::spawn(async move {
@@ -21,7 +27,7 @@ impl Plugin for EchoPlugin {
                         assert!(msg.target.is_some());
                         let user = msg.source_as_user().unwrap();
                         let target = msg.target.unwrap();
-                        let reply = format!("Hey {} thanks for saying `{}'! Much appreciated", user.nick, msg.parameters[0]);
+                        let reply = format!("Hey {:?} thanks for saying `{}'! Much appreciated", user, msg.parameters[0]);
                         irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
                     }
                 }
