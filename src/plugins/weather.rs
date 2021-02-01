@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
 use tokio::task::JoinHandle;
+use tokio::sync::RwLock;
 use log::*;
 use std::fs::File;
 use std::path::Path;
 use std::collections::HashMap;
+use std::sync::Arc;
 use ron::de::from_reader;
 use ron::ser::to_writer;
 use serde::{Deserialize, Serialize};
@@ -32,10 +34,11 @@ struct UserConfig {
     location: Option<String>,
     units: Option<Units>,
 }
-type UserWeather = HashMap<String, UserConfig>;
+type WeatherDB = RwLock<HashMap<String, UserConfig>>;
 
+#[derive(Clone)]
 pub struct WeatherPlugin {
-    user_db: UserWeather,
+    user_db: Arc<WeatherDB>,
     openweathermap_apikey: String,
     geonames_apiuser: String,
 }
@@ -63,18 +66,58 @@ impl WeatherPlugin {
         format!("data/{}-weather", server)
     }
 
-    fn load_from<P: AsRef<Path>>(path: P) -> Result<UserWeather> {
+    fn load_from<P: AsRef<Path>>(path: P) -> Result<WeatherDB> {
         // TODO use tokio + async instead of std
         let file = File::open(&path)?;
-        let user_db: UserWeather = from_reader(file)?;
-        Ok(user_db)
+        let user_db: HashMap<String, UserConfig> = from_reader(file)?;
+        Ok(RwLock::new(user_db))
     }
 
-    fn save_to<P: AsRef<Path> + std::fmt::Debug>(user_db: &UserWeather, path: P) -> Result<()> {
+    async fn save_to<P: AsRef<Path> + std::fmt::Debug>(&self, path: P) -> Result<()> {
         // TODO use tokio + async instead of std
         let file = File::create(&path)?;
-        to_writer(file, user_db)?;
+        let user_db = self.user_db.read().await;
+        to_writer(file, &*user_db)?;
         Ok(())
+    }
+
+    async fn get_user_config(&self, nick: &str) -> Option<UserConfig> {
+        let user_db = self.user_db.read().await;
+        user_db.get(nick).cloned()
+    }
+
+    async fn set_user_units(&self, nick: &str, units: Option<Units>) {
+        let mut user_db = self.user_db.write().await;
+        let mut delete = false;
+        if let Some(user_conf) = user_db.get_mut(nick) {
+            if units.is_none() && user_conf.location.is_none() { delete = true; }
+            user_conf.units = units;
+        } else if units.is_some() {
+            user_db.insert(nick.into(), UserConfig {
+                location: None,
+                units,
+            });
+        }
+        if delete {
+            user_db.remove(nick);
+        }
+    }
+
+    async fn set_user_location(&self, nick: &str, location: Option<String>) {
+        let mut user_db = self.user_db.write().await;
+        let mut delete = false;
+        if let Some(user_conf) = user_db.get_mut(nick) {
+            if location.is_none() && user_conf.units.is_none() { delete = true; }
+            user_conf.location = location;
+        } else if location.is_some() {
+            user_db.insert(nick.into(), UserConfig {
+                units: None,
+                location,
+            });
+        }
+        if delete {
+            user_db.remove(nick);
+        }
     }
 }
 
@@ -97,14 +140,14 @@ impl PluginBuilder for WeatherPlugin {
             Ok(WeatherPlugin {
                 openweathermap_apikey,
                 geonames_apiuser,
-                user_db,
+                user_db: Arc::new(user_db),
             })
         } else {
             warn!("[{}] Weather DB not found", server);
             Ok(WeatherPlugin {
                 openweathermap_apikey,
                 geonames_apiuser,
-                user_db: HashMap::new(),
+                user_db: Arc::new(RwLock::new(HashMap::new())),
             })
         }
     }
@@ -258,9 +301,9 @@ impl WeatherData {
         }
     }
 
-    fn print_data(&self, units: Option<&Units>, nick: Option<String>) -> String {
+    fn print_data(&self, units: Option<Units>, nick: Option<String>) -> String {
         let country = self.sys.country.clone().unwrap_or_else(|| "??".into());
-        let units = if let Some(units) = units { units } else if country == "US" { &IMPERIAL } else { &METRIC };
+        let units = if let Some(units) = units { units } else if country == "US" { IMPERIAL } else { METRIC };
         let prefix = nick.unwrap_or_else(|| format!("{}, {}", self.name, country));
         let (temp, min, max, feels) = (
             WeatherData::convert_temp(self.main.temp, &units.0),
@@ -297,6 +340,7 @@ struct TimeData {
 }
 
 impl WeatherPlugin {
+    // TODO use a single Reqwest::Client
     async fn get_openweathermap(&self, query: OWMQuery<'_>) -> Result<WeatherData> {
         let url = format!("https://api.openweathermap.org/data/2.5/weather?APPID={}&{}", self.openweathermap_apikey, query);
         let json: WeatherData = reqwest::get(&url).await?.json().await?;
@@ -310,168 +354,150 @@ impl WeatherPlugin {
     }
 }
 
+// TODO use same repsonse format (prefix with nick or not) for all cases
 // TODO maybe use another endpoint/more data for daily/weekly forecasts
 // TODO configurable and global command prefix
 // TODO convenience functions for sending a message back
 impl Plugin for WeatherPlugin {
-    fn spawn_task(mut self, mut irc: irc::IRC) -> Result<JoinHandle<Result<()>>> {
+    fn spawn_task(self, mut irc: irc::IRC) -> Result<JoinHandle<Result<()>>> {
         let handle = tokio::spawn(async move {
+            // TODO spawn new tasks for each request made (instead of reusing a single client)
             loop {
                 while let Ok(msg) = irc.received_messages.recv().await {
                     if let irc::Command::Privmsg = msg.command {
-                        if msg.target.is_none() || msg.parameters.len() != 1 {
-                            error!("Unexpected PRIVMSG format, ignoring");
-                            continue;
-                        }
+                        let plugin = self.clone();
+                        let irc = irc.clone();
+                        tokio::spawn(async move {
+                            if msg.target.is_none() || msg.parameters.len() != 1 {
+                                error!("Unexpected PRIVMSG format, ignoring");
+                                return;
+                            }
 
-                        // TODO ideally this only happens if theres a command
-                        let user = if let Some(user) = msg.source_as_user() { user } else {
-                            error!("PRIVMSG without user, ignoring");
-                            continue;
-                        };
-                        let target = msg.target.unwrap();
+                            // TODO ideally this only happens if theres a command
+                            let user = if let Some(user) = msg.source_as_user() { user } else {
+                                error!("PRIVMSG without user, ignoring");
+                                return;
+                            };
+                            let target = msg.target.unwrap();
 
-                        let (cmd, msg) = split_first_word(&msg.parameters[0]);
-                        match cmd {
-                            r"\w" | r"\t" => {
-                                let nick = user.nick.to_lowercase();
+                            let (cmd, msg) = split_first_word(&msg.parameters[0]);
+                            match cmd {
+                                r"\w" | r"\t" => {
+                                    let nick = user.nick.to_lowercase();
 
-                                let user_units = if let Some(UserConfig { location: _, units: Some(units) }) = self.user_db.get(&nick) {
-                                    Some(units)
-                                } else {
-                                    None
-                                };
+                                    let user_units = if let Some(UserConfig { location: _, units: Some(units) }) = plugin.get_user_config(&nick).await {
+                                        Some(units)
+                                    } else {
+                                        None
+                                    };
 
-                                let (query_string, target_nick) = if let Some(msg) = msg {
-                                    if let Some(target_nick) = msg.strip_prefix("@") {
-                                        let target_nick = target_nick.to_lowercase();
-                                        if let Some(UserConfig { location: Some(user_loc), units: _ }) = self.user_db.get(&target_nick) {
-                                            (user_loc.clone(), Some(target_nick))
+                                    let (query_string, target_nick) = if let Some(msg) = msg {
+                                        if let Some(target_nick) = msg.strip_prefix("@") {
+                                            let target_nick = target_nick.to_lowercase();
+                                            if let Some(UserConfig { location: Some(user_loc), units: _ }) = plugin.get_user_config(&target_nick).await {
+                                                (user_loc, Some(target_nick))
+                                            } else {
+                                                let reply = format!("{}: Could not find saved weather location for `{}`", nick, target_nick);
+                                                irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                                return;
+                                            }
                                         } else {
-                                            let reply = format!("{}: Could not find saved weather location for `{}`", nick, target_nick);
-                                            irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
-                                            continue;
+                                            (msg.to_owned(), None)
                                         }
                                     } else {
-                                        (msg.to_owned(), None)
-                                    }
-                                } else {
-                                    // no message, look up in user_db
-                                    if let Some(UserConfig { location: Some(user_loc), units: _ }) = self.user_db.get(&nick) {
-                                        (user_loc.clone(), Some(nick.clone()))
+                                        // no message, look up in user_db
+                                        if let Some(UserConfig { location: Some(user_loc), units: _ }) = plugin.get_user_config(&nick).await {
+                                            (user_loc, Some(nick.clone()))
+                                        } else {
+                                            let reply = format!("{}: Could not find your saved weather location; try using \\wset first", nick);
+                                            irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                            return;
+                                        }
+                                    };
+
+                                    let query = if let Some(id) = query_string.strip_prefix("id:") {
+                                        OWMQuery::Id(id)
+                                    } else if query_string.chars().all(|c| c.is_ascii_digit()) {
+                                        OWMQuery::USZip(&query_string)
                                     } else {
-                                        let reply = format!("{}: Could not find your saved weather location; try using \\wset first", nick);
-                                        irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
-                                        continue;
-                                    }
-                                };
+                                        OWMQuery::Simple(&query_string)
+                                    };
 
-                                let query = if let Some(id) = query_string.strip_prefix("id:") {
-                                    OWMQuery::Id(id)
-                                } else if query_string.chars().all(|c| c.is_ascii_digit()) {
-                                    OWMQuery::USZip(&query_string)
-                                } else {
-                                    OWMQuery::Simple(&query_string)
-                                };
-
-                                let weather_data = if let Ok(data) = self.get_openweathermap(query).await {
-                                    data
-                                } else {
-                                    let reply = format!("{}: Could not find `{}`", nick, query_string);
-                                    irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
-                                    continue;
-                                };
-
-                                if cmd == r"\w" {
-                                    let reply = weather_data.print_data(user_units, target_nick);
-                                    irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
-                                } else if cmd == r"\t" {
-                                    let geonames_data = if let Ok(data) = self.get_geonames(weather_data.coord).await {
+                                    let weather_data = if let Ok(data) = plugin.get_openweathermap(query).await {
                                         data
                                     } else {
-                                        let reply = format!("{}: Unexpected geonames error", nick);
-                                        irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
-                                        continue;
+                                        let reply = format!("{}: Could not find `{}`", nick, query_string);
+                                        irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                        return;
                                     };
 
-                                    let geoplace = if let Some(target_nick) = target_nick {
-                                        format!("for {}", target_nick)
-                                    } else {
-                                        format!("in {}, {}", weather_data.name, weather_data.sys.country.unwrap())
-                                    };
-                                    let reply = format!("{}: The curent time {} is {}", nick, geoplace, geonames_data.time);
-                                    irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
-                                }
-                            },
-                            r"\wset" => {
-                                let nick = user.nick.to_lowercase();
-                                let reply = if let Some(msg) = msg {
-                                    let reply = format!("{}: Updated your weather entry to `{}`", nick, msg);
-                                    if let Some(user_conf) = self.user_db.get_mut(&nick) {
-                                        user_conf.location = Some(msg.into());
-                                    } else {
-                                        self.user_db.insert(nick, UserConfig {
-                                            location: Some(msg.into()),
-                                            units: None,
-                                        });
-                                    }
-                                    reply
-                                } else {
-                                    let reply = format!("{}: Removed you from the weather database", nick);
-                                    if let Some(UserConfig { location: _, units: Some(units) }) = self.user_db.remove(&nick) {
-                                        self.user_db.insert(nick, UserConfig {
-                                            location: None,
-                                            units: Some(units),
-                                        });
-                                    }
-                                    reply
-                                };
-                                irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
+                                    if cmd == r"\w" {
+                                        let reply = weather_data.print_data(user_units, target_nick);
+                                        irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                    } else if cmd == r"\t" {
+                                        let geonames_data = if let Ok(data) = plugin.get_geonames(weather_data.coord).await {
+                                            data
+                                        } else {
+                                            let reply = format!("{}: Unexpected geonames error", nick);
+                                            irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                            return;
+                                        };
 
-                                // TODO improve this ugly ass part
-                                let db_path = WeatherPlugin::db_path(&irc.server);
-                                WeatherPlugin::save_to(&self.user_db, db_path).unwrap();
-                            },
-                            r"\units" => {
-                                let nick = user.nick.to_lowercase();
-                                let reply = if let Some(msg) = msg {
-                                    let units = match msg.to_lowercase().as_str() {
-                                        "metric" => METRIC,
-                                        "imperial" => IMPERIAL,
-                                        _ => {
-                                            let reply = format!("{}: Use \\units [metric|imperial] to set your preference", user.nick);
-                                            irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
-                                            continue;
-                                        },
-                                    };
-                                    let reply = format!("{}: Updated your units preference to `{:?}`", nick, units);
-                                    if let Some(user_conf) = self.user_db.get_mut(&nick) {
-                                        user_conf.units = Some(units);
+                                        let geoplace = if let Some(target_nick) = target_nick {
+                                            format!("for {}", target_nick)
+                                        } else {
+                                            format!("in {}, {}", weather_data.name, weather_data.sys.country.unwrap())
+                                        };
+                                        let reply = format!("{}: The curent time {} is {}", nick, geoplace, geonames_data.time);
+                                        irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                    }
+                                },
+                                r"\wset" => {
+                                    let nick = user.nick.to_lowercase();
+                                    let reply = if let Some(msg) = msg {
+                                        let reply = format!("{}: Updated your weather entry to `{}`", nick, msg);
+                                        plugin.set_user_location(&nick, Some(msg.into())).await;
+                                        reply
                                     } else {
-                                        self.user_db.insert(nick, UserConfig {
-                                            location: None,
-                                            units: Some(units),
-                                        });
-                                    }
-                                    reply
-                                } else {
-                                    let reply = format!("{}: Removed your saved unit preferences. Set it with \\units [metric|imperial]", nick);
-                                    if let Some(UserConfig { location: Some(location), units: _ }) = self.user_db.remove(&nick) {
-                                        self.user_db.insert(nick, UserConfig {
-                                            location: Some(location),
-                                            units: None,
-                                        });
-                                    }
-                                    reply
-                                };
-                                irc.send_messages.send(irc::Message::privmsg(target, reply)).await?;
+                                        let reply = format!("{}: Removed you from the weather database", nick);
+                                        plugin.set_user_location(&nick, None).await;
+                                        reply
+                                    };
+                                    irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
 
-                                // TODO improve this ugly ass part
-                                let db_path = WeatherPlugin::db_path(&irc.server);
-                                WeatherPlugin::save_to(&self.user_db, db_path).unwrap();
-                            },
-                            _ => {},
-                        }
+                                    // TODO improve this ugly ass part
+                                    let db_path = WeatherPlugin::db_path(&irc.server);
+                                    plugin.save_to(db_path).await.unwrap();
+                                },
+                                r"\units" => {
+                                    let nick = user.nick.to_lowercase();
+                                    let reply = if let Some(msg) = msg {
+                                        let units = match msg.to_lowercase().as_str() {
+                                            "metric" => METRIC,
+                                            "imperial" => IMPERIAL,
+                                            _ => {
+                                                let reply = format!("{}: Use \\units [metric|imperial] to set your preference", user.nick);
+                                                irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                                return;
+                                            },
+                                        };
+                                        let reply = format!("{}: Updated your units preference to `{:?}`", nick, units);
+                                        plugin.set_user_units(&nick, Some(units)).await;
+                                        reply
+                                    } else {
+                                        let reply = format!("{}: Removed your saved unit preferences. Set it with \\units [metric|imperial]", nick);
+                                        plugin.set_user_units(&nick, None).await;
+                                        reply
+                                    };
+                                    irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+
+                                    // TODO improve this ugly ass part
+                                    let db_path = WeatherPlugin::db_path(&irc.server);
+                                    plugin.save_to(db_path).await.unwrap();
+                                },
+                                _ => {},
+                            }
+                        });
                     }
                 }
             }
