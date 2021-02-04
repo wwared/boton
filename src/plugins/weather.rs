@@ -367,34 +367,6 @@ impl WeatherData {
     }
 }
 
-mod geoname_time {
-    use serde::{self, Deserialize, Deserializer};
-    use chrono::naive::NaiveDateTime;
-
-    const FORMAT: &str = "%Y-%m-%d %H:%M";
-
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<NaiveDateTime, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        NaiveDateTime::parse_from_str(&s, FORMAT).map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct TimeData {
-    #[serde(with = "geoname_time")]
-    sunrise: NaiveDateTime,
-    #[serde(with = "geoname_time")]
-    sunset: NaiveDateTime,
-
-    #[serde(with = "geoname_time")]
-    time: NaiveDateTime,
-}
-
 impl WeatherPlugin {
     async fn get_openweathermap(&self, query: OWMQuery<'_>) -> Result<WeatherData> {
         let url = format!("https://api.openweathermap.org/data/2.5/weather?APPID={}&{}", self.openweathermap_apikey, query);
