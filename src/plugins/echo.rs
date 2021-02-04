@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use anyhow::Result;
 use tokio::task::JoinHandle;
 use log::*;
@@ -7,11 +8,12 @@ use crate::plugins::{Plugin, PluginBuilder};
 
 pub struct EchoPlugin;
 
+#[async_trait]
 impl PluginBuilder for EchoPlugin {
     const NAME: &'static str = "echo";
     type Plugin = EchoPlugin;
 
-    fn new(_server: &str, _config: Option<&bot::PluginConfig>) -> Result<EchoPlugin> {
+    async fn new(_server: &str, _config: Option<&bot::PluginConfig>) -> Result<EchoPlugin> {
         Ok(EchoPlugin)
     }
 }

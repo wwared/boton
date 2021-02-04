@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use anyhow::Result;
 use tokio::task::JoinHandle;
 
@@ -9,10 +10,10 @@ pub mod weather;
 
 
 use std::collections::HashMap;
-pub fn spawn_plugins(irc: &irc::IRC, config: HashMap<String, bot::PluginConfig>) -> Result<HashMap<String, JoinHandle<Result<()>>>> {
+pub async fn spawn_plugins(irc: &irc::IRC, config: HashMap<String, bot::PluginConfig>) -> Result<HashMap<String, JoinHandle<Result<()>>>> {
     macro_rules! spawn_plugin {
         ($p:ident, $ty:ty) => {
-            let plug = <$ty>::new(&irc.server, config.get(<$ty>::NAME))?;
+            let plug = <$ty>::new(&irc.server, config.get(<$ty>::NAME)).await?;
             let plug = plug.spawn_task(irc.clone())?;
             $p.insert(<$ty>::NAME.into(), plug);
         }
@@ -25,13 +26,14 @@ pub fn spawn_plugins(irc: &irc::IRC, config: HashMap<String, bot::PluginConfig>)
 }
 
 // TODO figure out some way of managing errors from plugins
-// TODO auto-respawning the tasks if they die for whatever reason
+// TODO logging and auto-respawning the plugin tasks if they die for whatever reason
 
+#[async_trait]
 pub trait PluginBuilder {
     const NAME: &'static str;
     type Plugin;
 
-    fn new(server: &str, config: Option<&bot::PluginConfig>) -> Result<Self::Plugin>;
+    async fn new(server: &str, config: Option<&bot::PluginConfig>) -> Result<Self::Plugin>;
 }
 
 pub trait Plugin {

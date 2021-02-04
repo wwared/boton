@@ -1,13 +1,15 @@
+use async_trait::async_trait;
 use anyhow::{anyhow, Result};
+use tokio::fs::{File, read_to_string};
 use tokio::task::JoinHandle;
 use tokio::sync::RwLock;
+use tokio::io::AsyncWriteExt;
 use log::*;
-use std::fs::File;
-use std::path::Path;
 use std::collections::HashMap;
 use std::sync::Arc;
-use ron::de::from_reader;
-use ron::ser::to_writer;
+use chrono::{naive::NaiveDateTime, DateTime, Utc, FixedOffset, Duration};
+use ron::de::from_str;
+use ron::ser::to_string;
 use serde::{Deserialize, Serialize};
 use crate::irc;
 use crate::bot;
@@ -39,10 +41,11 @@ type WeatherDB = RwLock<HashMap<String, UserConfig>>;
 #[derive(Clone)]
 pub struct WeatherPlugin {
     user_db: Arc<WeatherDB>,
+    http_client: reqwest::Client,
     openweathermap_apikey: String,
-    geonames_apiuser: String,
 }
 
+// TODO support lat/lon queries too?
 enum OWMQuery<'a> {
     Simple(&'a str),
     Id(&'a str),
@@ -66,18 +69,19 @@ impl WeatherPlugin {
         format!("data/{}-weather", server)
     }
 
-    fn load_from<P: AsRef<Path>>(path: P) -> Result<WeatherDB> {
-        // TODO use tokio + async instead of std
-        let file = File::open(&path)?;
-        let user_db: HashMap<String, UserConfig> = from_reader(file)?;
+    async fn load_db(server: &str) -> Result<WeatherDB> {
+        let db_path = WeatherPlugin::db_path(server);
+        let data = read_to_string(&db_path).await?;
+        let user_db: HashMap<String, UserConfig> = from_str(&data)?;
         Ok(RwLock::new(user_db))
     }
 
-    async fn save_to<P: AsRef<Path> + std::fmt::Debug>(&self, path: P) -> Result<()> {
-        // TODO use tokio + async instead of std
-        let file = File::create(&path)?;
+    async fn save_db(&self, server: &str) -> Result<()> {
+        let db_path = WeatherPlugin::db_path(server);
+        let mut file = File::create(&db_path).await?;
         let user_db = self.user_db.read().await;
-        to_writer(file, &*user_db)?;
+        let data = to_string(&*user_db)?;
+        file.write_all(data.as_bytes()).await?;
         Ok(())
     }
 
@@ -121,32 +125,37 @@ impl WeatherPlugin {
     }
 }
 
+#[async_trait]
 impl PluginBuilder for WeatherPlugin {
     const NAME: &'static str = "weather";
     type Plugin = WeatherPlugin;
 
-    fn new(server: &str, config: Option<&bot::PluginConfig>) -> Result<WeatherPlugin> {
+    async fn new(server: &str, config: Option<&bot::PluginConfig>) -> Result<WeatherPlugin> {
         if config.is_none() {
-            return Err(anyhow!("Weather plugin needs `openweathermap-apikey` and `geonames-apiuser` config keys"));
+            return Err(anyhow!("Weather plugin requires `openweathermap-apikey` in its config section"));
         }
         let config = config.unwrap();
         // TODO get rid of these clones
         let openweathermap_apikey = config.get("openweathermap-apikey").expect("[Weather] Missing `openweathermap-apikey`").clone();
-        let geonames_apiuser = config.get("geonames-apiuser").expect("[Weather] Missing `geonames-apiuser`").clone();
-        let user_db_path = WeatherPlugin::db_path(server);
-        if let Ok(user_db) = WeatherPlugin::load_from(user_db_path) {
+
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(Duration::seconds(10).to_std()?)
+            .connection_verbose(true)
+            .build()?;
+
+        if let Ok(user_db) = WeatherPlugin::load_db(server).await {
             info!("[{}] Weather DB loaded successfully", server);
             debug!("{:?}", user_db);
             Ok(WeatherPlugin {
                 openweathermap_apikey,
-                geonames_apiuser,
+                http_client,
                 user_db: Arc::new(user_db),
             })
         } else {
             warn!("[{}] Weather DB not found", server);
             Ok(WeatherPlugin {
                 openweathermap_apikey,
-                geonames_apiuser,
+                http_client,
                 user_db: Arc::new(RwLock::new(HashMap::new())),
             })
         }
@@ -158,6 +167,20 @@ fn split_first_word(text: &str) -> (&str, Option<&str>) {
         (&text[..space], Some(&text[space+1..]))
     } else {
         (text, None)
+    }
+}
+
+mod unix_ts {
+    use serde::{self, Deserialize, Deserializer};
+    use chrono::{DateTime, TimeZone, Utc};
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<DateTime<Utc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        i64::deserialize(deserializer).map(|t| Utc.timestamp(t, 0))
     }
 }
 
@@ -183,39 +206,50 @@ struct WeatherCond {
 
 #[derive(Deserialize, Debug, Clone)]
 struct WeatherMain {
-    temp: f64,
-    feels_like: f64,
-    temp_min: f64,
-    temp_max: f64,
-    pressure: f64,
-    humidity: f64,
+    temp: f64, // K
+    feels_like: f64, // K
+    temp_min: f64, // K
+    temp_max: f64, // K
+    pressure: f64, // hPa
+    humidity: f64, // %
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct Wind {
-    speed: f64,
-    deg: Option<f64>,
+    speed: f64, // m/s
+    gust: Option<f64>, // m/s
+    deg: Option<f64>, // °
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct Sys {
     country: Option<String>,
-    // #[serde(with = "timestamp")]
-    // sunrise: DateTime<Utc>,
-    // #[serde(with = "timestamp")]
-    // sunset: DateTime<Utc>,
+    #[serde(with = "unix_ts")]
+    sunrise: DateTime<Utc>,
+    #[serde(with = "unix_ts")]
+    sunset: DateTime<Utc>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct Rain {
+    #[serde(alias = "1h")]
+    volume: f64, // mm
     #[serde(alias = "3h")]
-    three_hour: Option<f64>,
+    three_hour: Option<f64>, // mm
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct Snow {
+    #[serde(alias = "1h")]
+    volume: f64, // mm
     #[serde(alias = "3h")]
-    three_hour: Option<f64>,
+    three_hour: Option<f64>, // mm
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct Cloud {
+    #[serde(alias = "all")]
+    cloudiness: f64, // %
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -226,10 +260,11 @@ struct WeatherData {
     main: WeatherMain,
     visibility: Option<f64>,
     wind: Wind,
+    clouds: Cloud,
     rain: Option<Rain>,
     snow: Option<Snow>,
-    // #[serde(with = "timestamp")]
-    // dt: DateTime<Utc>,
+    #[serde(with = "unix_ts")]
+    dt: DateTime<Utc>,
     sys: Sys,
     timezone: i32,
     name: String,
@@ -301,6 +336,7 @@ impl WeatherData {
         }
     }
 
+    // TODO air pollution too?
     fn print_data(&self, units: Option<Units>, nick: Option<String>) -> String {
         let country = self.sys.country.clone().unwrap_or_else(|| "??".into());
         let units = if let Some(units) = units { units } else if country == "US" { IMPERIAL } else { METRIC };
@@ -331,42 +367,58 @@ impl WeatherData {
     }
 }
 
+mod geoname_time {
+    use serde::{self, Deserialize, Deserializer};
+    use chrono::naive::NaiveDateTime;
+
+    const FORMAT: &str = "%Y-%m-%d %H:%M";
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<NaiveDateTime, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        NaiveDateTime::parse_from_str(&s, FORMAT).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 struct TimeData {
-    // TODO
-    // sunrise: String,
-    // sunset: String,
-    time: String,
+    #[serde(with = "geoname_time")]
+    sunrise: NaiveDateTime,
+    #[serde(with = "geoname_time")]
+    sunset: NaiveDateTime,
+
+    #[serde(with = "geoname_time")]
+    time: NaiveDateTime,
 }
 
 impl WeatherPlugin {
-    // TODO use a single Reqwest::Client
     async fn get_openweathermap(&self, query: OWMQuery<'_>) -> Result<WeatherData> {
         let url = format!("https://api.openweathermap.org/data/2.5/weather?APPID={}&{}", self.openweathermap_apikey, query);
-        let json: WeatherData = reqwest::get(&url).await?.json().await?;
-        Ok(json)
-    }
-
-    async fn get_geonames(&self, coord: Coord) -> Result<TimeData> {
-        let url = format!("http://api.geonames.org/timezoneJSON?username={}{}", self.geonames_apiuser, coord);
-        let json: TimeData = reqwest::get(&url).await?.json().await?;
+        let json: WeatherData = self.http_client.get(&url).send().await?.json().await?;
+        debug!("Weather data:\n{:#?}", json);
         Ok(json)
     }
 }
 
-// TODO use same repsonse format (prefix with nick or not) for all cases
-// TODO maybe use another endpoint/more data for daily/weekly forecasts
-// TODO configurable and global command prefix
-// TODO convenience functions for sending a message back
+// TODO use more data and reformat stuff; remove temp_min and temp_max
+// TODO factor out the code into functions and organize stuff better
+// TODO configurable and global command prefix (for the factored privmsg handling; move it out of this file)
+// TODO convenience function for sending a privmsg in IRC
 impl Plugin for WeatherPlugin {
     fn spawn_task(self, mut irc: irc::IRC) -> Result<JoinHandle<Result<()>>> {
         let handle = tokio::spawn(async move {
-            // TODO spawn new tasks for each request made (instead of reusing a single client)
             loop {
                 while let Ok(msg) = irc.received_messages.recv().await {
                     if let irc::Command::Privmsg = msg.command {
                         let plugin = self.clone();
                         let irc = irc.clone();
+                        // TODO maybe some "standard" plugin way of spawning tasks/registering handles
+                        // so when the plugin gets cancelled/restarted they can be aborted?
+                        // doesn't really matter in the weather plugin case i believe
                         tokio::spawn(async move {
                             if msg.target.is_none() || msg.parameters.len() != 1 {
                                 error!("Unexpected PRIVMSG format, ignoring");
@@ -409,7 +461,7 @@ impl Plugin for WeatherPlugin {
                                         if let Some(UserConfig { location: Some(user_loc), units: _ }) = plugin.get_user_config(&nick).await {
                                             (user_loc, Some(nick.clone()))
                                         } else {
-                                            let reply = format!("{}: Could not find your saved weather location; try using \\wset first", nick);
+                                            let reply = format!("{}: Inform a city, or optionally set a city using \\wset. Accepted formats: `city`, `city, country` (ISO country code), US zip codes, `id:1234` (OpenWeatherMap ID)", nick);
                                             irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
                                             return;
                                         }
@@ -423,10 +475,12 @@ impl Plugin for WeatherPlugin {
                                         OWMQuery::Simple(&query_string)
                                     };
 
-                                    let weather_data = if let Ok(data) = plugin.get_openweathermap(query).await {
+                                    let weather = plugin.get_openweathermap(query).await;
+                                    let weather_data = if let Ok(data) = weather {
                                         data
                                     } else {
-                                        let reply = format!("{}: Could not find `{}`", nick, query_string);
+                                        debug!("Weather error: query_string: {}, response: {:?}", query_string, weather);
+                                        let reply = format!("{}: Could not get weather, sorry! Maybe the query is invalid?", nick);
                                         irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
                                         return;
                                     };
@@ -435,39 +489,32 @@ impl Plugin for WeatherPlugin {
                                         let reply = weather_data.print_data(user_units, target_nick);
                                         irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
                                     } else if cmd == r"\t" {
-                                        let geonames_data = if let Ok(data) = plugin.get_geonames(weather_data.coord).await {
-                                            data
-                                        } else {
-                                            let reply = format!("{}: Unexpected geonames error", nick);
-                                            irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
-                                            return;
-                                        };
+                                        let current_time = Utc::now().with_timezone(&FixedOffset::east(weather_data.timezone));
 
                                         let geoplace = if let Some(target_nick) = target_nick {
                                             format!("for {}", target_nick)
                                         } else {
                                             format!("in {}, {}", weather_data.name, weather_data.sys.country.unwrap())
                                         };
-                                        let reply = format!("{}: The curent time {} is {}", nick, geoplace, geonames_data.time);
+                                        let reply = format!("The curent date and time {} is {}", geoplace, current_time);
                                         irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
                                     }
                                 },
                                 r"\wset" => {
                                     let nick = user.nick.to_lowercase();
                                     let reply = if let Some(msg) = msg {
-                                        let reply = format!("{}: Updated your weather entry to `{}`", nick, msg);
+                                        let reply = format!("{}: Updated your saved weather location to `{}`", nick, msg);
                                         plugin.set_user_location(&nick, Some(msg.into())).await;
                                         reply
                                     } else {
-                                        let reply = format!("{}: Removed you from the weather database", nick);
+                                        let reply = format!("{}: Removed your saved weather location", nick);
                                         plugin.set_user_location(&nick, None).await;
                                         reply
                                     };
                                     irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
 
                                     // TODO improve this ugly ass part
-                                    let db_path = WeatherPlugin::db_path(&irc.server);
-                                    plugin.save_to(db_path).await.unwrap();
+                                    plugin.save_db(&irc.server).await.unwrap();
                                 },
                                 r"\units" => {
                                     let nick = user.nick.to_lowercase();
@@ -476,24 +523,23 @@ impl Plugin for WeatherPlugin {
                                             "metric" => METRIC,
                                             "imperial" => IMPERIAL,
                                             _ => {
-                                                let reply = format!("{}: Use \\units [metric|imperial] to set your preference", user.nick);
+                                                let reply = format!("{}: Use \\units [metric|imperial] to set your saved preference", user.nick);
                                                 irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
                                                 return;
                                             },
                                         };
-                                        let reply = format!("{}: Updated your units preference to `{:?}`", nick, units);
+                                        let reply = format!("{}: Updated your saved units preference to `{:?}`", nick, units);
                                         plugin.set_user_units(&nick, Some(units)).await;
                                         reply
                                     } else {
-                                        let reply = format!("{}: Removed your saved unit preferences. Set it with \\units [metric|imperial]", nick);
+                                        let reply = format!("{}: Removed your saved unit preferences. Set it again with \\units [metric|imperial]", nick);
                                         plugin.set_user_units(&nick, None).await;
                                         reply
                                     };
                                     irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
 
                                     // TODO improve this ugly ass part
-                                    let db_path = WeatherPlugin::db_path(&irc.server);
-                                    plugin.save_to(db_path).await.unwrap();
+                                    plugin.save_db(&irc.server).await.unwrap();
                                 },
                                 _ => {},
                             }

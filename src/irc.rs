@@ -147,8 +147,6 @@ const READ_BUF_SIZE: usize = 4 * 1024;
 const RECV_MSG_CHAN: usize = 16;
 const SEND_MSG_CHAN: usize = 16;
 
-// TODO remove allow(dead_code)
-#[allow(dead_code)]
 pub async fn connect<A: ToSocketAddrs>(server: &str, addr: A) -> Result<(IRC, JoinHandle<Result<()>>)> {
     let stream = TcpStream::connect(addr).await?;
 
@@ -156,7 +154,6 @@ pub async fn connect<A: ToSocketAddrs>(server: &str, addr: A) -> Result<(IRC, Jo
     conn.spawn_tasks().await
 }
 
-#[allow(dead_code)]
 pub async fn connect_tls<A: ToSocketAddrs>(server: &str, addr: A, domain: &str) -> Result<(IRC, JoinHandle<Result<()>>)> {
     let connector = tokio_native_tls::native_tls::TlsConnector::builder()
         .danger_accept_invalid_certs(true)
@@ -223,27 +220,32 @@ impl<S: 'static + AsyncReadExt + AsyncWriteExt + Unpin + Send> Connection<S> {
             let (recv_channel_tx, mut recv_half, mut recv_buffer) = (self.received_messages, self.recv_half, self.recv_buffer);
 
             // Read messages
-            let read_handle = tokio::spawn(async move {
+            let read_handle = tokio::spawn((async move || -> Result<()> {
                 loop {
-                    Connection::receive_messages(&mut recv_half, &mut recv_buffer, &recv_channel_tx).await.unwrap();
+                    Connection::receive_messages(&mut recv_half, &mut recv_buffer, &recv_channel_tx).await?;
                     trace!("Processed a batch of received messages");
                 }
-            });
+            })());
             trace!("Spawned read task: {:?}", read_handle);
 
             // Send messages
-            let send_handle = tokio::spawn(async move {
+            let send_handle = tokio::spawn((async move || -> Result<()> {
                 while let Some(msg) = send_channel_rx.recv().await {
                     trace!("Got message to send");
-                    Connection::send_message(&mut write_half, &msg).await.unwrap();
+                    Connection::send_message(&mut write_half, &msg).await?;
                 }
-            });
+                Ok(())
+            })());
             trace!("Spawned send task: {:?}", send_handle);
 
-            read_handle.await?;
-            send_handle.await?;
-            warn!("Exiting connection tasks...");
-            Ok(())
+            let res = read_handle.await?;
+            debug!("irc read task existed: {:?}", res);
+            if res.is_err() {
+                send_handle.abort();
+                res
+            } else {
+                unreachable!("this should never happen");
+            }
         });
         Ok((irc, join_handle))
     }

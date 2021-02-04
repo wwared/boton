@@ -1,3 +1,7 @@
+#![feature(async_closure)]
+
+use log::*;
+
 mod irc;
 mod bot;
 mod plugins;
@@ -10,24 +14,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loaded config: {:#?}", bots);
     let bot_handles = bots.spawn_tasks().await?;
 
-    for handle in bot_handles {
-        handle.await??;
+    for h in bot_handles {
+        h.await??;
     }
 
-    // testing code for flooding a channel
-    // let lol = irc.send_messages.clone();
-    // tokio::spawn(async move {
-    //     loop {
-    //         lol.send(irc::Message {
-    //             source: None,
-    //             command: irc::Command::Other("PRIVMSG".into()),
-    //             target: Some("#test".into()),
-    //             parameters: vec![
-    //                 "throughput testing".into()
-    //             ],
-    //         }).await.unwrap();
-    //     }
-    // });
-
+    info!("All connections closed, exiting...");
     Ok(())
 }
