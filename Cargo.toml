@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["wwared"]
 edition = "2018"
 
+[profile.release]
+lto = "fat"
+
 [dependencies]
 bytes = "1"
 tokio = { version = "1", features = ["full"] }

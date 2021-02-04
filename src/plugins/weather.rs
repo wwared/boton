@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 use log::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use chrono::{naive::NaiveDateTime, DateTime, Utc, FixedOffset, Duration};
+use chrono::{DateTime, Utc, FixedOffset, Duration};
 use ron::de::from_str;
 use ron::ser::to_string;
 use serde::{Deserialize, Serialize};
@@ -380,6 +380,8 @@ impl WeatherPlugin {
 // TODO factor out the code into functions and organize stuff better
 // TODO configurable and global command prefix (for the factored privmsg handling; move it out of this file)
 // TODO convenience function for sending a privmsg in IRC
+// TODO the privmsg function should support "replying": if sent to a channel, replies there, otherwise if it's a pm send it back
+// TODO maybe that can be generalized to other stuff besides privmsgs?
 impl Plugin for WeatherPlugin {
     fn spawn_task(self, mut irc: irc::IRC) -> Result<JoinHandle<Result<()>>> {
         let handle = tokio::spawn(async move {

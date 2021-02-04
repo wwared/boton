@@ -1,5 +1,6 @@
 #![feature(async_closure)]
 
+// TODO use tracing/tracing-subscriber instead of log/env-logger
 use log::*;
 
 mod irc;
