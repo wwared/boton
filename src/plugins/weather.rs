@@ -1,19 +1,19 @@
-use async_trait::async_trait;
+use crate::bot;
+use crate::irc;
+use crate::plugins::{Plugin, PluginBuilder};
 use anyhow::{anyhow, Result};
-use tokio::fs::{File, read_to_string};
-use tokio::task::JoinHandle;
-use tokio::sync::RwLock;
-use tokio::io::AsyncWriteExt;
+use async_trait::async_trait;
+use chrono::{DateTime, Duration, FixedOffset, Utc};
 use log::*;
-use std::collections::HashMap;
-use std::sync::Arc;
-use chrono::{DateTime, Utc, FixedOffset, Duration};
 use ron::de::from_str;
 use ron::ser::to_string;
 use serde::{Deserialize, Serialize};
-use crate::irc;
-use crate::bot;
-use crate::plugins::{Plugin, PluginBuilder};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::fs::{read_to_string, File};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 enum Speed {
@@ -34,14 +34,14 @@ const METRIC: Units = (Temperature::Celsius, Speed::KMH);
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct UserConfig {
     location: Option<String>,
-    units: Option<Units>,
+    units:    Option<Units>,
 }
 type WeatherDB = RwLock<HashMap<String, UserConfig>>;
 
 #[derive(Clone)]
 pub struct WeatherPlugin {
-    user_db: Arc<WeatherDB>,
-    http_client: reqwest::Client,
+    user_db:               Arc<WeatherDB>,
+    http_client:           reqwest::Client,
     openweathermap_apikey: String,
 }
 
@@ -52,14 +52,14 @@ enum OWMQuery<'a> {
     USZip(&'a str),
 }
 
-use std::fmt;
 use fmt::Display;
+use std::fmt;
 impl<'a> Display for OWMQuery<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OWMQuery::Simple(query) => write!(f, "q={}", query),
-            OWMQuery::Id(id)        => write!(f, "id={}", id),
-            OWMQuery::USZip(zip)    => write!(f, "zip={}", zip),
+            OWMQuery::Id(id) => write!(f, "id={}", id),
+            OWMQuery::USZip(zip) => write!(f, "zip={}", zip),
         }
     }
 }
@@ -94,13 +94,18 @@ impl WeatherPlugin {
         let mut user_db = self.user_db.write().await;
         let mut delete = false;
         if let Some(user_conf) = user_db.get_mut(nick) {
-            if units.is_none() && user_conf.location.is_none() { delete = true; }
+            if units.is_none() && user_conf.location.is_none() {
+                delete = true;
+            }
             user_conf.units = units;
         } else if units.is_some() {
-            user_db.insert(nick.into(), UserConfig {
-                location: None,
-                units,
-            });
+            user_db.insert(
+                nick.into(),
+                UserConfig {
+                    location: None,
+                    units,
+                },
+            );
         }
         if delete {
             user_db.remove(nick);
@@ -111,13 +116,18 @@ impl WeatherPlugin {
         let mut user_db = self.user_db.write().await;
         let mut delete = false;
         if let Some(user_conf) = user_db.get_mut(nick) {
-            if location.is_none() && user_conf.units.is_none() { delete = true; }
+            if location.is_none() && user_conf.units.is_none() {
+                delete = true;
+            }
             user_conf.location = location;
         } else if location.is_some() {
-            user_db.insert(nick.into(), UserConfig {
-                units: None,
-                location,
-            });
+            user_db.insert(
+                nick.into(),
+                UserConfig {
+                    units: None,
+                    location,
+                },
+            );
         }
         if delete {
             user_db.remove(nick);
@@ -127,16 +137,22 @@ impl WeatherPlugin {
 
 #[async_trait]
 impl PluginBuilder for WeatherPlugin {
-    const NAME: &'static str = "weather";
     type Plugin = WeatherPlugin;
+
+    const NAME: &'static str = "weather";
 
     async fn new(server: &str, config: Option<&bot::PluginConfig>) -> Result<WeatherPlugin> {
         if config.is_none() {
-            return Err(anyhow!("Weather plugin requires `openweathermap-apikey` in its config section"));
+            return Err(anyhow!(
+                "Weather plugin requires `openweathermap-apikey` in its config section"
+            ));
         }
         let config = config.unwrap();
         // TODO get rid of these clones
-        let openweathermap_apikey = config.get("openweathermap-apikey").expect("[Weather] Missing `openweathermap-apikey`").clone();
+        let openweathermap_apikey = config
+            .get("openweathermap-apikey")
+            .expect("[Weather] Missing `openweathermap-apikey`")
+            .clone();
 
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::seconds(10).to_std()?)
@@ -164,19 +180,17 @@ impl PluginBuilder for WeatherPlugin {
 
 fn split_first_word(text: &str) -> (&str, Option<&str>) {
     if let Some(space) = text.find(' ') {
-        (&text[..space], Some(&text[space+1..]))
+        (&text[.. space], Some(&text[space + 1 ..]))
     } else {
         (text, None)
     }
 }
 
 mod unix_ts {
-    use serde::{self, Deserialize, Deserializer};
     use chrono::{DateTime, TimeZone, Utc};
+    use serde::{self, Deserialize, Deserializer};
 
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<DateTime<Utc>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -199,26 +213,26 @@ impl Display for Coord {
 
 #[derive(Deserialize, Debug, Clone)]
 struct WeatherCond {
-    main: String,
+    main:        String,
     description: String,
-    icon: Option<String>,
+    icon:        Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct WeatherMain {
-    temp: f64, // K
+    temp:       f64, // K
     feels_like: f64, // K
-    temp_min: f64, // K
-    temp_max: f64, // K
-    pressure: f64, // hPa
-    humidity: f64, // %
+    temp_min:   f64, // K
+    temp_max:   f64, // K
+    pressure:   f64, // hPa
+    humidity:   f64, // %
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct Wind {
-    speed: f64, // m/s
-    gust: Option<f64>, // m/s
-    deg: Option<f64>, // °
+    speed: f64,         // m/s
+    gust:  Option<f64>, // m/s
+    deg:   Option<f64>, // °
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -227,13 +241,13 @@ struct Sys {
     #[serde(with = "unix_ts")]
     sunrise: DateTime<Utc>,
     #[serde(with = "unix_ts")]
-    sunset: DateTime<Utc>,
+    sunset:  DateTime<Utc>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct Rain {
     #[serde(alias = "1h")]
-    volume: f64, // mm
+    volume:     f64, // mm
     #[serde(alias = "3h")]
     three_hour: Option<f64>, // mm
 }
@@ -241,7 +255,7 @@ struct Rain {
 #[derive(Deserialize, Debug, Clone)]
 struct Snow {
     #[serde(alias = "1h")]
-    volume: f64, // mm
+    volume:     f64, // mm
     #[serde(alias = "3h")]
     three_hour: Option<f64>, // mm
 }
@@ -254,20 +268,20 @@ struct Cloud {
 
 #[derive(Deserialize, Debug, Clone)]
 struct WeatherData {
-    coord: Coord,
-    weather: Vec<WeatherCond>,
-    base: String,
-    main: WeatherMain,
+    coord:      Coord,
+    weather:    Vec<WeatherCond>,
+    base:       String,
+    main:       WeatherMain,
     visibility: Option<f64>,
-    wind: Wind,
-    clouds: Cloud,
-    rain: Option<Rain>,
-    snow: Option<Snow>,
+    wind:       Wind,
+    clouds:     Cloud,
+    rain:       Option<Rain>,
+    snow:       Option<Snow>,
     #[serde(with = "unix_ts")]
-    dt: DateTime<Utc>,
-    sys: Sys,
-    timezone: i32,
-    name: String,
+    dt:         DateTime<Utc>,
+    sys:        Sys,
+    timezone:   i32,
+    name:       String,
 }
 
 impl Display for Speed {
@@ -282,64 +296,76 @@ impl Display for Speed {
 impl Display for Temperature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Temperature::Celsius    => write!(f, "°C"),
+            Temperature::Celsius => write!(f, "°C"),
             Temperature::Fahrenheit => write!(f, "°F"),
         }
     }
 }
 
-
 impl WeatherData {
     fn convert_temp(kelvin: f64, format: &Temperature) -> f64 {
         match format {
-            Temperature::Celsius => {
-                kelvin - 273.15
-            },
-            Temperature::Fahrenheit => {
-                (kelvin - 273.15) * 9./5. + 32.
-            },
+            Temperature::Celsius => kelvin - 273.15,
+            Temperature::Fahrenheit => (kelvin - 273.15) * 9. / 5. + 32.,
         }
     }
 
     fn convert_speed(meters_per_sec: f64, format: &Speed) -> f64 {
         match format {
-            Speed::KMH => { meters_per_sec * 3.6 },
-            Speed::MPH => { meters_per_sec * 2.237 },
+            Speed::KMH => meters_per_sec * 3.6,
+            Speed::MPH => meters_per_sec * 2.237,
         }
     }
 
     fn convert_wind_dir(degrees: f64) -> Result<&'static str> {
-        if      (0.0   ..= 22.5).contains(&degrees) { Ok(" N") }
-        else if (22.5  ..= 67.5).contains(&degrees) { Ok(" NE") }
-        else if (67.5  ..= 112.).contains(&degrees) { Ok(" E") }
-        else if (112.5 ..= 157.).contains(&degrees) { Ok(" SE") }
-        else if (157.5 ..= 202.).contains(&degrees) { Ok(" S") }
-        else if (202.5 ..= 247.).contains(&degrees) { Ok(" SW") }
-        else if (247.5 ..= 292.).contains(&degrees) { Ok(" W") }
-        else if (292.5 ..= 337.).contains(&degrees) { Ok(" NW") }
-        else if (337.5 ..= 360.).contains(&degrees) { Ok(" N") }
-        else { Err(anyhow!("Wind direction out of range")) }
+        if (0.0 ..= 22.5).contains(&degrees) {
+            Ok(" N")
+        } else if (22.5 ..= 67.5).contains(&degrees) {
+            Ok(" NE")
+        } else if (67.5 ..= 112.).contains(&degrees) {
+            Ok(" E")
+        } else if (112.5 ..= 157.).contains(&degrees) {
+            Ok(" SE")
+        } else if (157.5 ..= 202.).contains(&degrees) {
+            Ok(" S")
+        } else if (202.5 ..= 247.).contains(&degrees) {
+            Ok(" SW")
+        } else if (247.5 ..= 292.).contains(&degrees) {
+            Ok(" W")
+        } else if (292.5 ..= 337.).contains(&degrees) {
+            Ok(" NW")
+        } else if (337.5 ..= 360.).contains(&degrees) {
+            Ok(" N")
+        } else {
+            Err(anyhow!("Wind direction out of range"))
+        }
     }
 
     fn get_icon(icon: &str) -> Result<&'static str> {
         match icon {
-            "01d" => { Ok("\u{2600}\u{FE0F}") }, // sun
-            "01n" => { Ok("\u{1F319}") }, // moon
-            "02d" => { Ok("\u{26C5}") }, // sun behind cloud
-            "03d" | "04d" | "02n" | "03n" | "04n" => { Ok("\u{2601}\u{FE0F}") }, // cloud
-            "09d" | "09n" | "10n" => { Ok("\u{1F327}\u{FE0F}") }, // cloud with rain
-            "10d" => { Ok("\u{1F326}\u{FE0F}") }, // sun behind cloud with rain
-            "11d" | "11n" => { Ok("\u{1F329}\u{FE0F}") }, // cloud with lightning
-            "13d" | "13n" => { Ok("\u{1F328}\u{FE0F}") }, // cloud with snow
-            "50d" | "50n" => { Ok("\u{1F32B}\u{FE0F}") }, // fog
-            _ => { Err(anyhow!("Unknown icon value `{}`", icon)) }
+            "01d" => Ok("\u{2600}\u{FE0F}"), // sun
+            "01n" => Ok("\u{1F319}"),        // moon
+            "02d" => Ok("\u{26C5}"),         // sun behind cloud
+            "03d" | "04d" | "02n" | "03n" | "04n" => Ok("\u{2601}\u{FE0F}"), // cloud
+            "09d" | "09n" | "10n" => Ok("\u{1F327}\u{FE0F}"), // cloud with rain
+            "10d" => Ok("\u{1F326}\u{FE0F}"), // sun behind cloud with rain
+            "11d" | "11n" => Ok("\u{1F329}\u{FE0F}"), // cloud with lightning
+            "13d" | "13n" => Ok("\u{1F328}\u{FE0F}"), // cloud with snow
+            "50d" | "50n" => Ok("\u{1F32B}\u{FE0F}"), // fog
+            _ => Err(anyhow!("Unknown icon value `{}`", icon)),
         }
     }
 
     // TODO air pollution too?
     fn print_data(&self, units: Option<Units>, nick: Option<String>) -> String {
         let country = self.sys.country.clone().unwrap_or_else(|| "??".into());
-        let units = if let Some(units) = units { units } else if country == "US" { IMPERIAL } else { METRIC };
+        let units = if let Some(units) = units {
+            units
+        } else if country == "US" {
+            IMPERIAL
+        } else {
+            METRIC
+        };
         let prefix = nick.unwrap_or_else(|| format!("{}, {}", self.name, country));
         let (temp, min, max, feels) = (
             WeatherData::convert_temp(self.main.temp, &units.0),
@@ -347,7 +373,10 @@ impl WeatherData {
             WeatherData::convert_temp(self.main.temp_max, &units.0),
             WeatherData::convert_temp(self.main.feels_like, &units.0),
         );
-        let temperature = format!("{:.1} {} · {:.1}⌄ {:.1}⌃ (feels like {:.1})", temp, units.0, min, max, feels);
+        let temperature = format!(
+            "{:.1} {} · {:.1}⌄ {:.1}⌃ (feels like {:.1})",
+            temp, units.0, min, max, feels
+        );
         let description = if let Some(icon) = &self.weather[0].icon {
             let icon = WeatherData::get_icon(icon).unwrap();
             format!(" 〜 {} {}", icon, self.weather[0].description)
@@ -363,13 +392,19 @@ impl WeatherData {
         let wind_speed = WeatherData::convert_speed(self.wind.speed, &units.1);
         let wind = format!(" 〜 \u{1F4A8} {:.1} {}{}", wind_speed, units.1, wind_dir);
 
-        format!("Weather for {}: {}{}{}{}", prefix, temperature, description, humidity, wind)
+        format!(
+            "Weather for {}: {}{}{}{}",
+            prefix, temperature, description, humidity, wind
+        )
     }
 }
 
 impl WeatherPlugin {
     async fn get_openweathermap(&self, query: OWMQuery<'_>) -> Result<WeatherData> {
-        let url = format!("https://api.openweathermap.org/data/2.5/weather?APPID={}&{}", self.openweathermap_apikey, query);
+        let url = format!(
+            "https://api.openweathermap.org/data/2.5/weather?APPID={}&{}",
+            self.openweathermap_apikey, query
+        );
         let json: WeatherData = self.http_client.get(&url).send().await?.json().await?;
         debug!("Weather data:\n{:#?}", json);
         Ok(json)
@@ -378,10 +413,11 @@ impl WeatherPlugin {
 
 // TODO use more data and reformat stuff; remove temp_min and temp_max
 // TODO factor out the code into functions and organize stuff better
-// TODO configurable and global command prefix (for the factored privmsg handling; move it out of this file)
-// TODO convenience function for sending a privmsg in IRC
-// TODO the privmsg function should support "replying": if sent to a channel, replies there, otherwise if it's a pm send it back
-// TODO maybe that can be generalized to other stuff besides privmsgs?
+// TODO configurable and global command prefix (for the factored privmsg
+// handling; move it out of this file) TODO convenience function for sending a
+// privmsg in IRC TODO the privmsg function should support "replying": if sent
+// to a channel, replies there, otherwise if it's a pm send it back TODO maybe
+// that can be generalized to other stuff besides privmsgs?
 impl Plugin for WeatherPlugin {
     fn spawn_task(self, mut irc: irc::IRC) -> Result<JoinHandle<Result<()>>> {
         let handle = tokio::spawn(async move {
@@ -390,8 +426,8 @@ impl Plugin for WeatherPlugin {
                     if let irc::Command::Privmsg = msg.command {
                         let plugin = self.clone();
                         let irc = irc.clone();
-                        // TODO maybe some "standard" plugin way of spawning tasks/registering handles
-                        // so when the plugin gets cancelled/restarted they can be aborted?
+                        // TODO maybe some "standard" plugin way of spawning tasks/registering
+                        // handles so when the plugin gets cancelled/restarted they can be aborted?
                         // doesn't really matter in the weather plugin case i believe
                         tokio::spawn(async move {
                             if msg.target.is_none() || msg.parameters.len() != 1 {
@@ -400,7 +436,9 @@ impl Plugin for WeatherPlugin {
                             }
 
                             // TODO ideally this only happens if theres a command
-                            let user = if let Some(user) = msg.source_as_user() { user } else {
+                            let user = if let Some(user) = msg.source_as_user() {
+                                user
+                            } else {
                                 error!("PRIVMSG without user, ignoring");
                                 return;
                             };
@@ -411,7 +449,11 @@ impl Plugin for WeatherPlugin {
                                 r"\w" | r"\t" => {
                                     let nick = user.nick.to_lowercase();
 
-                                    let user_units = if let Some(UserConfig { location: _, units: Some(units) }) = plugin.get_user_config(&nick).await {
+                                    let user_units = if let Some(UserConfig {
+                                        location: _,
+                                        units: Some(units),
+                                    }) = plugin.get_user_config(&nick).await
+                                    {
                                         Some(units)
                                     } else {
                                         None
@@ -420,11 +462,22 @@ impl Plugin for WeatherPlugin {
                                     let (query_string, target_nick) = if let Some(msg) = msg {
                                         if let Some(target_nick) = msg.strip_prefix("@") {
                                             let target_nick = target_nick.to_lowercase();
-                                            if let Some(UserConfig { location: Some(user_loc), units: _ }) = plugin.get_user_config(&target_nick).await {
+                                            if let Some(UserConfig {
+                                                location: Some(user_loc),
+                                                units: _,
+                                            }) = plugin.get_user_config(&target_nick).await
+                                            {
                                                 (user_loc, Some(target_nick))
                                             } else {
-                                                let reply = format!("{}: Could not find saved weather location for `{}`", nick, target_nick);
-                                                irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                                let reply = format!(
+                                                    "{}: Could not find saved weather location \
+                                                     for `{}`",
+                                                    nick, target_nick
+                                                );
+                                                irc.send_messages
+                                                    .send(irc::Message::privmsg(target, reply))
+                                                    .await
+                                                    .unwrap();
                                                 return;
                                             }
                                         } else {
@@ -432,11 +485,24 @@ impl Plugin for WeatherPlugin {
                                         }
                                     } else {
                                         // no message, look up in user_db
-                                        if let Some(UserConfig { location: Some(user_loc), units: _ }) = plugin.get_user_config(&nick).await {
+                                        if let Some(UserConfig {
+                                            location: Some(user_loc),
+                                            units: _,
+                                        }) = plugin.get_user_config(&nick).await
+                                        {
                                             (user_loc, Some(nick.clone()))
                                         } else {
-                                            let reply = format!("{}: Inform a city, or optionally set a city using \\wset. Accepted formats: `city`, `city, country` (ISO country code), US zip codes, `id:1234` (OpenWeatherMap ID)", nick);
-                                            irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                            let reply = format!(
+                                                "{}: Inform a city, or optionally set a city \
+                                                 using \\wset. Accepted formats: `city`, `city, \
+                                                 country` (ISO country code), US zip codes, \
+                                                 `id:1234` (OpenWeatherMap ID)",
+                                                nick
+                                            );
+                                            irc.send_messages
+                                                .send(irc::Message::privmsg(target, reply))
+                                                .await
+                                                .unwrap();
                                             return;
                                         }
                                     };
@@ -453,39 +519,74 @@ impl Plugin for WeatherPlugin {
                                     let weather_data = if let Ok(data) = weather {
                                         data
                                     } else {
-                                        debug!("Weather error: query_string: {}, response: {:?}", query_string, weather);
-                                        let reply = format!("{}: Could not get weather, sorry! Maybe the query is invalid?", nick);
-                                        irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                        debug!(
+                                            "Weather error: query_string: {}, response: {:?}",
+                                            query_string, weather
+                                        );
+                                        let reply = format!(
+                                            "{}: Could not get weather, sorry! Maybe the query is \
+                                             invalid?",
+                                            nick
+                                        );
+                                        irc.send_messages
+                                            .send(irc::Message::privmsg(target, reply))
+                                            .await
+                                            .unwrap();
                                         return;
                                     };
 
                                     if cmd == r"\w" {
-                                        let reply = weather_data.print_data(user_units, target_nick);
-                                        irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                        let reply =
+                                            weather_data.print_data(user_units, target_nick);
+                                        irc.send_messages
+                                            .send(irc::Message::privmsg(target, reply))
+                                            .await
+                                            .unwrap();
                                     } else if cmd == r"\t" {
-                                        let current_time = Utc::now().with_timezone(&FixedOffset::east(weather_data.timezone));
+                                        let current_time = Utc::now().with_timezone(
+                                            &FixedOffset::east(weather_data.timezone),
+                                        );
 
                                         let geoplace = if let Some(target_nick) = target_nick {
                                             format!("for {}", target_nick)
                                         } else {
-                                            format!("in {}, {}", weather_data.name, weather_data.sys.country.unwrap())
+                                            format!(
+                                                "in {}, {}",
+                                                weather_data.name,
+                                                weather_data.sys.country.unwrap()
+                                            )
                                         };
-                                        let reply = format!("The curent date and time {} is {}", geoplace, current_time);
-                                        irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                        let reply = format!(
+                                            "The curent date and time {} is {}",
+                                            geoplace, current_time
+                                        );
+                                        irc.send_messages
+                                            .send(irc::Message::privmsg(target, reply))
+                                            .await
+                                            .unwrap();
                                     }
                                 },
                                 r"\wset" => {
                                     let nick = user.nick.to_lowercase();
                                     let reply = if let Some(msg) = msg {
-                                        let reply = format!("{}: Updated your saved weather location to `{}`", nick, msg);
+                                        let reply = format!(
+                                            "{}: Updated your saved weather location to `{}`",
+                                            nick, msg
+                                        );
                                         plugin.set_user_location(&nick, Some(msg.into())).await;
                                         reply
                                     } else {
-                                        let reply = format!("{}: Removed your saved weather location", nick);
+                                        let reply = format!(
+                                            "{}: Removed your saved weather location",
+                                            nick
+                                        );
                                         plugin.set_user_location(&nick, None).await;
                                         reply
                                     };
-                                    irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                    irc.send_messages
+                                        .send(irc::Message::privmsg(target, reply))
+                                        .await
+                                        .unwrap();
 
                                     plugin.save_db(&irc.server).await.unwrap();
                                 },
@@ -496,20 +597,37 @@ impl Plugin for WeatherPlugin {
                                             "metric" => METRIC,
                                             "imperial" => IMPERIAL,
                                             _ => {
-                                                let reply = format!("{}: Use \\units [metric|imperial] to set your saved preference", user.nick);
-                                                irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                                let reply = format!(
+                                                    "{}: Use \\units [metric|imperial] to set \
+                                                     your saved preference",
+                                                    user.nick
+                                                );
+                                                irc.send_messages
+                                                    .send(irc::Message::privmsg(target, reply))
+                                                    .await
+                                                    .unwrap();
                                                 return;
                                             },
                                         };
-                                        let reply = format!("{}: Updated your saved units preference to `{:?}`", nick, units);
+                                        let reply = format!(
+                                            "{}: Updated your saved units preference to `{:?}`",
+                                            nick, units
+                                        );
                                         plugin.set_user_units(&nick, Some(units)).await;
                                         reply
                                     } else {
-                                        let reply = format!("{}: Removed your saved unit preferences. Set it again with \\units [metric|imperial]", nick);
+                                        let reply = format!(
+                                            "{}: Removed your saved unit preferences. Set it \
+                                             again with \\units [metric|imperial]",
+                                            nick
+                                        );
                                         plugin.set_user_units(&nick, None).await;
                                         reply
                                     };
-                                    irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
+                                    irc.send_messages
+                                        .send(irc::Message::privmsg(target, reply))
+                                        .await
+                                        .unwrap();
 
                                     plugin.save_db(&irc.server).await.unwrap();
                                 },

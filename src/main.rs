@@ -3,8 +3,8 @@
 // TODO use tracing/tracing-subscriber instead of log/env-logger
 use log::*;
 
-mod irc;
 mod bot;
+mod irc;
 mod plugins;
 
 #[tokio::main]

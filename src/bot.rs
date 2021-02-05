@@ -1,11 +1,11 @@
 use std::{fs::File, path::Path};
 
 use anyhow::{anyhow, Result};
-use tokio::task::JoinHandle;
+use log::*;
 use ron::de::from_reader;
 use serde::Deserialize;
-use log::*;
 use std::collections::HashMap;
+use tokio::task::JoinHandle;
 
 use crate::irc;
 use crate::plugins;
@@ -16,7 +16,7 @@ pub type PluginConfig = HashMap<String, String>;
 /// Global configuration, including possibly many bots
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    bots: Vec<Bot>,
+    bots:    Vec<Bot>,
     plugins: HashMap<String, PluginConfig>,
 }
 
@@ -24,16 +24,15 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone)]
 struct Bot {
     /// Hostname and port of IRC server
-    server: (String, u16),
+    server:    (String, u16),
     /// Whether TLS should be used
-    use_tls: bool,
+    use_tls:   bool,
     // /// Whether the server TLS certificate should be validated (using system store)
     // validate_cert: bool, // TODO
-
     /// Bot nickname
-    nick: String,
+    nick:      String,
     /// Bot ident/username
-    ident: String,
+    ident:     String,
     /// Bot realname
     real_name: String,
 
@@ -45,7 +44,10 @@ impl Bot {
     // TODO try to go back to old nick if changed
     // TODO handle kicks/parts/whatever and rejoin?
 
-    pub async fn spawn_tasks(self, plugin_configs: HashMap<String, PluginConfig>) -> Result<JoinHandle<Result<()>>> {
+    pub async fn spawn_tasks(
+        self,
+        plugin_configs: HashMap<String, PluginConfig>,
+    ) -> Result<JoinHandle<Result<()>>> {
         let server = self.server.0.clone();
         info!("[{}] Starting bot", server);
         let handle = tokio::spawn((async move || -> Result<()> {
@@ -59,7 +61,8 @@ impl Bot {
             let plugs = plugins::spawn_plugins(&irc, plugin_configs).await?;
 
             let send_handle = tokio::spawn((async move || -> Result<()> {
-                irc.authenticate(self.nick, self.ident, self.real_name).await?;
+                irc.authenticate(self.nick, self.ident, self.real_name)
+                    .await?;
 
                 loop {
                     while let Ok(msg) = irc.received_messages.recv().await {
@@ -96,7 +99,10 @@ impl Config {
     pub async fn spawn_tasks(&self) -> Result<Vec<JoinHandle<Result<()>>>> {
         let mut handles = vec![];
         for bot in self.bots.clone() {
-            handles.push((bot.server.0.clone(), bot.spawn_tasks(self.plugins.clone()).await?));
+            handles.push((
+                bot.server.0.clone(),
+                bot.spawn_tasks(self.plugins.clone()).await?,
+            ));
         }
         let mut reconnection_handles = vec![];
         for (server, mut handle) in handles {
@@ -114,7 +120,12 @@ impl Config {
     }
 
     pub async fn spawn_task(&self, server: &str) -> Result<JoinHandle<Result<()>>> {
-        let bot = self.bots.iter().find(|b| b.server.0 == server).map(Ok).unwrap_or_else(|| Err(anyhow!("could not find server {}", server)))?;
+        let bot = self
+            .bots
+            .iter()
+            .find(|b| b.server.0 == server)
+            .map(Ok)
+            .unwrap_or_else(|| Err(anyhow!("could not find server {}", server)))?;
         Ok(bot.clone().spawn_tasks(self.plugins.clone()).await?)
     }
 }
