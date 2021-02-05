@@ -487,7 +487,6 @@ impl Plugin for WeatherPlugin {
                                     };
                                     irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
 
-                                    // TODO improve this ugly ass part
                                     plugin.save_db(&irc.server).await.unwrap();
                                 },
                                 r"\units" => {
@@ -512,7 +511,6 @@ impl Plugin for WeatherPlugin {
                                     };
                                     irc.send_messages.send(irc::Message::privmsg(target, reply)).await.unwrap();
 
-                                    // TODO improve this ugly ass part
                                     plugin.save_db(&irc.server).await.unwrap();
                                 },
                                 _ => {},

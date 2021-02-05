@@ -8,16 +8,17 @@ edition = "2018"
 lto = "fat"
 
 [dependencies]
-bytes = "1"
-tokio = { version = "1", features = ["full"] }
-nom = "6"
-log = "0.4"
-env_logger = "0.8"
 anyhow = "1"
-tokio-native-tls = "0.3.0"
+async-trait = "0.1.42"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+env_logger = "0.8"
+log = "0.4"
+nom = "6"
+openssl = { version = "0.10", features = ["vendored"] }
+reqwest = { version = "0.11.0", features = ["native-tls", "gzip", "brotli", "json"] }
 ron = "*"
 serde = "1"
-reqwest = { version = "0.11.0", features = ["native-tls", "gzip", "brotli", "json"] }
 serde_json = "1.0.61"
-chrono = { version = "0.4", features = ["serde"] }
-async-trait = "0.1.42"
+tokio = { version = "1", features = ["full", "parking_lot"] }
+tokio-native-tls = "0.3.0"

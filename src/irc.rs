@@ -239,7 +239,7 @@ impl<S: 'static + AsyncReadExt + AsyncWriteExt + Unpin + Send> Connection<S> {
             trace!("Spawned send task: {:?}", send_handle);
 
             let res = read_handle.await?;
-            debug!("irc read task existed: {:?}", res);
+            debug!("irc read task exited: {:?}", res);
             if res.is_err() {
                 send_handle.abort();
                 res
